@@ -1,20 +1,15 @@
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
 import metpy.calc as mpcalc
-from metpy.plots import add_metpy_logo, SkewT
 from metpy.units import units
 from scipy.integrate import BDF
 from scipy import interpolate
-from scipy.ndimage.filters import maximum_filter1d, gaussian_filter1d
 
-import threading
 
-import os
-import netCDF4 as nc
-import xarray as xr
-import time
+# import time
+
+from glidar_model.moist_cache import MoistCache
 
 
 class Utils:
@@ -134,7 +129,7 @@ class ThermalModel:
     """
     This is the mighty class computing vertical profiles from air sounding data.
     """
-    semaphore = threading.BoundedSemaphore()
+    # semaphore = threading.BoundedSemaphore()
     g = 9.81 # the gravitational constant ms^-2
 
     def __init__(self, altitude, pressure, temperature, dewpoint, cached=True, riemann=True):
@@ -149,6 +144,7 @@ class ThermalModel:
         self.riemann_flag = riemann
 
         p = np.linspace(pressure[0], pressure[-1], pressure.size)
+
         self.altitude = np.interp(p[::-1], pressure[::-1], altitude[::-1])[::-1]
         self.temperature = np.interp(p[::-1], pressure[::-1], temperature[::-1])[::-1]
         self.dewpoint = np.interp(p[::-1], pressure[::-1], dewpoint[::-1])[::-1]
@@ -159,56 +155,9 @@ class ThermalModel:
                                       self.temperature,
                                       self.dewpoint)
 
-        self.moist = None
+        self.moist_cache = None
         if self.cached:
-            self.precompute_cache()
-
-    def precompute_cache(self):
-
-        self.moist = []
-        # Precompute the moist adiabatic profiles
-        temp = np.linspace(-20, 30, 50)
-        for t in temp:
-            m = mpcalc.moist_lapse(self.pressure, t * units.celsius)
-            self.moist.append(m)
-        self.moist = np.array(self.moist) * units.celsius
-        print('Cache computed.')
-
-    def get_cached_profile(self, temperature, dew_point):
-
-        if self.moist is None:
-            self.precompute_cache()
-            print('Cache was not precomputed, computing now...')
-
-        p0, t0 = mpcalc.lcl(self.pressure[0], temperature, dew_point)
-        dry = mpcalc.dry_lapse(self.pressure, temperature)
-
-        ip = None
-        ips = np.where(self.pressure < p0)
-        if len(ips[0]) > 0:
-            ip = ips[0][0]
-        else:
-            return dry
-            # raise RuntimeError('Cannot get cached profile, pressure too small', p0, t0, temperature, dew_point)
-
-        it = None
-        its = np.where(self.moist.T[ip] > t0)
-        if len(its[0] > 0):
-            it = its[0][0]
-            if it == 0:
-                raise RuntimeError('Cannot get cached profile, temperature too low.', p0, t0, temperature, dew_point)
-            it = (it - 1, it)
-        else:
-            raise RuntimeError('Cannot get cached profile, temperature too high.', p0, t0, temperature, dew_point)
-
-        # Bi-linear interpolation
-        pp = self.pressure[[ip-1, ip]]
-        ttt = self.moist[it[0]:it[1]+1, [ip-1, ip]]
-        tt = (ttt[:, 0] * (pp[1] - p0) + (p0 - pp[0]) * ttt[:, 1]) / (pp[1] - pp[0])
-
-        f = ((tt[1] - t0) * self.moist[it[0], :] + (t0 - tt[0]) * self.moist[it[1], :]) / (tt[1] - tt[0])
-
-        return np.where(self.pressure > p0, dry, f)
+            self.moist_cache = MoistCache(self.pressure)
 
     def calc_temperature_profile(self, temperature, dew_point):
         """
@@ -219,12 +168,12 @@ class ThermalModel:
         :return: temperature profile
         """
         if self.cached:
-            return self.get_cached_profile(temperature, dew_point)
+            return self.moist_cache.get_cached_profile(temperature, dew_point)
 
-        with ThermalModel.semaphore:
-            res = mpcalc.parcel_profile(self.pressure,
-                                         temperature,
-                                         dew_point).to(units.kelvin)
+        # with ThermalModel.semaphore:
+        res = mpcalc.parcel_profile(self.pressure,
+                                    temperature,
+                                    dew_point).to(units.kelvin)
 
         return res
 
@@ -345,6 +294,7 @@ class ThermalModel:
 
         theta_bar_virtual = self.calculate_virtual_profile(pre, t_bar, RH_bar)
         result.theta_bar_virtual = theta_bar_virtual
+
         result.t_bar_virtual = (theta_bar_virtual / mpcalc.potential_temperature(self.pressure,
                                                          np.ones_like(self.pressure) * units.kelvin)) * units.kelvin
         result.dew_bar = mpcalc.dewpoint_from_relative_humidity(t_bar, RH_bar)
@@ -412,15 +362,9 @@ class ThermalModel:
             idx = np.where(t_bar < self.temperature)[0]
             if idx.size > 0:
                 idx = idx[0]
-                # t_bar[idx:] = tmp[idx:]
                 t_bar = Utils.combine_pint_arrays(t_bar, self.temperature, idx)
             else:
                 idx = None
-
-        # if use_sounding:
-            # If we are using a sounding profile, combine the base state with
-            # the sounding temperatures
-            # t_bar = np.where(t_bar < self.temperature, self.temperature, t_bar)
 
         result.t_bar = t_bar
 
@@ -645,260 +589,34 @@ class ThermalModel:
         result.virtual_delta_t = virtual_t_prime * units.kelvin
         return result
 
-    def fit_thermal(self, df, x0, bounds):
+    # def fit_thermal(self, df, x0, bounds):
 
-        w, z = df['vario'].to_numpy(), df['altitude'].to_numpy()
+    #     w, z = df['vario'].to_numpy(), df['altitude'].to_numpy()
 
-        zz = np.linspace(0,2000, 200)
-        ww = np.zeros_like(zz)
-        idx = (z/10.).astype(np.int)
+    #     zz = np.linspace(0,2000, 200)
+    #     ww = np.zeros_like(zz)
+    #     idx = (z/10.).astype(np.int)
 
-        for i, j in enumerate(idx):
-            if ww[j] < w[i]:
-                ww[j] = w[i]
+    #     for i, j in enumerate(idx):
+    #         if ww[j] < w[i]:
+    #             ww[j] = w[i]
 
-        sub = np.nonzero(ww)
+    #     sub = np.nonzero(ww)
 
-        def fit_fn(args):
-            T_0 = args[0]
-            Td_0 = args[1]
-            deltaT = args[2]
-            a = args[3]
-            g = args[4]
-            z0  = args[5]
-            b, _ = self.calc_buoyancy_profile(T_0 * units.kelvin, Td_0*units.kelvin, deltaT*units.kelvin, gamma=g)
-            w, z = self.calc_velocity_profile(b , self.altitude, z0, alpha=a)
+    #     def fit_fn(args):
 
-            return np.sum((ww - np.interp(zz,z,w)) **2)
+    #         params = ModelParams(*args)
+    #         result = ModelResult()
+
+    #         b, _ = self.calc_buoyancy_profile()
+    #         w, z = self.calc_velocity_profile(b , self.altitude, z0, alpha=a)
+
+    #         return np.sum((ww - np.interp(zz,z,w)) **2)
             
-        from scipy.optimize import minimize
+    #     from scipy.optimize import minimize
 
-        return ww, zz, minimize(fit_fn, x0, method='Nelder-Mead', bounds=bounds)
+    #     return ww, zz, minimize(fit_fn, x0, method='Nelder-Mead', bounds=bounds)
 
-
-###################################################################################################################
-# Some testing functionality below ...
-###################################################################################################################
-
-
-def test_riemann_integration():
-
-    folder = '../data/Voss-2018-04-29/sounding/'
-    sola_file = 'sola_20180331-20180430.nc'
-    date = '2018-04-29 11:06:37'
-
-    alt, tmp, pre, dtp = get_observed_data(folder + sola_file, date)
-
-    deltaT = 0.5 * units.kelvin
-    T_0 = (273.15 + 8) * units.kelvin
-    Td_0 = (273.15 + 0) * units.kelvin
-
-    params = ModelParams(T_0, deltaT, Td_0,
-                         dew_point_anomaly=0 * units.kelvin,
-                         thermal_altitude=100,
-                         drag_coeff=0,
-                         entrainment_coeff=0,
-                         humidity_entrainment_coeff=0,
-                         aspect_ratio=0)
-
-    result = ModelResult()
-    start = time.time()
-
-    m = ThermalModel(alt, pre, tmp, dtp)
-    b, _ = m.calc_buoyancy_profile(params, result)
-    w, z, bb = m.calc_velocity_profile(b, alt, 300, debug=True)
-    # TODO: Hacking units
-    b *= units.meter / units.second / units.second
-
-    for w0 in np.logspace(-1, -5, 10):
-        # print(w0)
-        ww, a = m.riemann_calc_velocity_profile(b, alt.values, 300, w0=w0)
-        plt.plot(ww, a)
-
-    end = time.time()
-
-    # print(ww)
-
-    # print('Timed average over 100 runs:', (end - start) / 100)
-
-    plt.plot(w, z, 'x')
-    plt.show()
-
-
-def time_model_computation():
-
-    from tqdm.cli import tqdm
-
-    alt , tmp , pre , dtp = get_observed_data()
-
-    params = ModelParams(surface_temperature=(273.15 + 8) * units.kelvin,
-                         temperature_anomaly=0.5 * units.kelvin,
-                         dew_point_temperature=(273.15 + 0) * units.kelvin,
-                         dew_point_anomaly=0 * units.kelvin,
-                         thermal_altitude=100,
-                         drag_coeff=0,
-                         entrainment_coeff=0,
-                         humidity_entrainment_coeff=0,
-                         aspect_ratio=0)
-
-    for flags in [(False, False),
-                  (True, False),
-                  (False, True),
-                  (True, True)]:
-        m = ThermalModel(alt, pre, tmp, dtp, *flags)
-        start = time.time()
-        for i in tqdm(range(100)):
-            m.compute_fit(params)
-        end = time.time()
-        print('Cached: {}, Riemann: {}, Timed average over 100 runs: {}'.format(*flags, (end - start)/100))
-
-
-def test_model_computation():
-
-    folder = '../data/Voss-2018-04-29/sounding/'
-    sola_file = 'sola_20180331-20180430.nc'
-    date = '2018-04-29 11:06:37'
-
-    alt , tmp , pre , dtp = get_observed_data(folder + sola_file, date)
-
-    deltaT = 0.5 * units.kelvin
-    T_0 = (273.15 + 8) * units.kelvin
-    Td_0 = (273.15 + 0) * units.kelvin
-
-    params = ModelParams(T_0, deltaT, Td_0,
-                         dew_point_anomaly=0 * units.kelvin,
-                         thermal_altitude=100,
-                         drag_coeff=0,
-                         entrainment_coeff=0,
-                         humidity_entrainment_coeff=0,
-                         aspect_ratio=0)
-
-    result = ModelResult()
-
-    m = ThermalModel(alt, pre, tmp, dtp)
-
-    # plt.plot(pre, alt, ',')
-    # plt.plot(m.pressure, m.altitude, ',')
-    # plt.show()
-
-
-    start = time.time()
-    for i in range(100):
-        b, _ = m.calc_buoyancy_profile(params, result)
-        w, z, bb = m.calc_velocity_profile(b , alt, 300, debug=True)
-
-    end = time.time()
-    print('Timed average over 100 runs:', (end - start)/100)
-
-    # Riemann
-    start = time.time()
-    for i in range(100):
-        b, _ = m.calc_buoyancy_profile(params, result)
-        #    def riemann_calc_velocity_profile(self,  buoyancy, altitude, z_0, alpha=0.00, quadratic_drag=0, w0=0.01):
-        w, z = m.riemann_calc_velocity_profile(b , alt, 300)
-
-    end = time.time()
-    print('Timed Riemann average over 100 runs:', (end - start)/100)
-
-    #
-    # CACHED TIMES
-    m = ThermalModel(alt, pre, tmp, dtp, cached=True)
-
-    start = time.time()
-    for i in range(100):
-        b, _ = m.calc_buoyancy_profile(params, result)
-        w, z, bb = m.calc_velocity_profile(b , alt, 300, debug=True)
-
-    end = time.time()
-    print('Cached timed average over 100 runs:', (end - start)/100)
-
-    # Riemann
-    start = time.time()
-    for i in range(100):
-        b, _ = m.calc_buoyancy_profile(params, result)
-        #    def riemann_calc_velocity_profile(self,  buoyancy, altitude, z_0, alpha=0.00, quadratic_drag=0, w0=0.01):
-        w, z = m.riemann_calc_velocity_profile(b , alt, 300)
-
-    end = time.time()
-    print('Cached riemann timed average over 100 runs:', (end - start)/100)
-
-    zz = np.linspace(0, 3000, 100000)
-
-    # plt.title('Check spline interpolation')
-    # plt.plot(bb.b(zz), zz)
-    # plt.plot(b, alt, 'x')
-    # plt.xlabel('Buoyancy')
-    # plt.xlabel('altitude')
-    # plt.show()
-    #
-    # plt.plot(w, z, 'x-')
-    # plt.plot(b * 100, alt)
-    # plt.plot(tmp.magnitude - 273.15, alt)
-    # plt.show()
-
-
-def test_model_fitting():
-
-    folder = '../data/Voss-2018-04-29/sounding/'
-    sola_file = 'sola_20180331-20180430.nc'
-    date = '2018-04-29 11:06:37'
-
-    alt , tmp , pre , dtp = get_observed_data(folder + sola_file, date)
-
-    deltaT = 0.5 * units.kelvin
-    p_0 = 1008 * units.hPa
-    T_0 = (273.15 + 8) * units.kelvin
-    Td_0 = (273.15 + 0) * units.kelvin
-
-    m = ThermalModel(alt, pre, tmp, dtp)
-    b, _ = m.calc_buoyancy_profile(T_0, Td_0, deltaT)
-    w, z = m.calc_velocity_profile(b , alt, 300)
-
-    df = pd.read_csv('../../data/Voss-vol2/clusters.csv')
-
-    w, z, res = m.fit_thermal(df[df.labels == 178], [
-        T_0.magnitude, Td_0.magnitude, deltaT.magnitude, 0, 0, 500
-    ], [
-        (273.15, 293.15),
-        (263.15, 283.15),
-        (0, 5),
-        (0, 0.1),
-        (0, 0.1),
-        (0, 1000),
-    ])
-
-    plt.plot(w, z)
-
-    b, _ = m.calc_buoyancy_profile(res.x[0] * units.kelvin, res.x[1] * units.kelvin, res.x[2] * units.kelvin, gamma=res.x[4])
-    w, z = m.calc_velocity_profile(b , alt, res.x[5], alpha=res.x[3])
-    plt.plot(w, z)
-    plt.show()
-
-    # print (res)
-    # print (res.x)
-
-
-def get_observed_data(filename='data/sola_20180331-20180430.nc',
-                      date='2018-04-29 11:06:37'):
-
-    # folder = '../data/Voss-2018-04-29/sounding/'
-    # sola_file = 'sola_20180331-20180430.nc'
-    # date = '2018-04-29 11:06:37'
-
-    ds = nc.Dataset(filename)
-    xds = xr.open_dataset(filename)
-    df = xds.to_dataframe()
-    data = df.loc[date].iloc[3:, :]
-
-    d = data.altitude[data.altitude < 3000]
-    index = data.altitude[data.altitude < 3000].index
-
-    alt = data.altitude[index].values * units[ds.variables['altitude'].units]
-    tmp = data.air_temperature[index].values * units[ds.variables['air_temperature'].units]
-    pre = data.air_pressure[index].values * units[ds.variables['air_pressure'].units]
-    dtp = data.dew_point_temperature[index].values * units[ds.variables['dew_point_temperature'].units]
-
-    return alt, tmp, pre, dtp
 
 
 ###################################################################################################################
@@ -963,11 +681,13 @@ def sample_buoyancy_no_temp():
 
 if __name__ == '__main__':
 
+    pass 
+
     # sample_buoyancy_no_temp()
 
     # test_riemann_integration()
     # test_model_computation()
-    time_model_computation()
+    # time_model_computation()
     # test_model_fitting()
 
     # folder = '../data/Voss-2018-04-29/sounding/'
