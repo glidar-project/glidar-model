@@ -100,11 +100,10 @@ def synthetic_profile(surface_temperature, inversion_delta, inversion_height,
     return result
 
 
-def adjust_sounding_profile(sounding, surface_temperature,
-                            dew_point_temperature):
+def adjust_sounding_profile_helper(sounding, surface_temperature,
+                            dew_point_temperature, get_parcel_profile=mpcalc.parcel_profile):
 
-    
-    t_bar = mpcalc.parcel_profile(sounding.pressure, surface_temperature, dew_point_temperature)
+    t_bar = get_parcel_profile(sounding.pressure, surface_temperature, dew_point_temperature)
 
     idx = np.where(t_bar < sounding.temperature)[0]
     if idx.size > 0:
@@ -135,3 +134,12 @@ def adjust_sounding_profile(sounding, surface_temperature,
     water_bar = mpcalc.density(sounding.pressure, t_bar, mx_bar) * mx_bar
 
     added_water = np.trapz(water_bar - water_obs, sounding.altitude)
+
+    return BackgrounProfile(sounding.pressure, t_bar, )
+
+
+def adjust_sounding_profile(sounding, surface_temperature,
+                            dew_point_temperature):
+
+    return adjust_sounding_profile_helper(sounding, surface_temperature,
+                            dew_point_temperature)
