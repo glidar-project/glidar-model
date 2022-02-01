@@ -1,4 +1,3 @@
-
 import numpy as np
 import metpy.calc as mpcalc
 
@@ -34,13 +33,15 @@ class MoistCache:
         for t in temp:
             m = mpcalc.moist_lapse(self.pressure, t * units.celsius)
             self.moist.append(m)
-        self.moist = np.array(self.moist) * units.celsius   # np.array strips the units..
+        self.moist = np.array(
+            self.moist) * units.celsius  # np.array strips the units..
         print('Cache computed.')
 
     def get_cached_profile(self, temperature, dew_point):
 
         if dew_point > temperature:
-            raise ValueError('Dewpoint is higher than air temperature.', temperature, dew_point)
+            raise ValueError('Dewpoint is higher than air temperature.',
+                             temperature, dew_point)
 
         if self.moist is None:
             self.precompute_cache()
@@ -53,7 +54,8 @@ class MoistCache:
         ips = np.where(self.pressure < p0)
         if len(ips[0]) > 0:
             ip = ips[0][0]
-        else:   # The lcl is above the end of the profile, dry profile is sufficient.
+        # The lcl is above the end of the profile, dry profile is sufficient.
+        else:
             return dry
 
         it = None
@@ -61,16 +63,22 @@ class MoistCache:
         if len(its[0] > 0):
             it = its[0][0]
             if it == 0:
-                raise RuntimeError('Cannot get cached profile, temperature too low.', p0, t0, temperature, dew_point)
+                raise RuntimeError(
+                    'Cannot get cached profile, temperature too low.', p0, t0,
+                    temperature, dew_point)
             it = (it - 1, it)
         else:
-            raise RuntimeError('Cannot get cached profile, temperature too high.', p0, t0, temperature, dew_point)
+            raise RuntimeError(
+                'Cannot get cached profile, temperature too high.', p0, t0,
+                temperature, dew_point)
 
         # Bi-linear interpolation
-        pp = self.pressure[[ip-1, ip]]
-        ttt = self.moist[it[0]:it[1]+1, [ip-1, ip]]
-        tt = (ttt[:, 0] * (pp[1] - p0) + (p0 - pp[0]) * ttt[:, 1]) / (pp[1] - pp[0])
+        pp = self.pressure[[ip - 1, ip]]
+        ttt = self.moist[it[0]:it[1] + 1, [ip - 1, ip]]
+        tt = (ttt[:, 0] * (pp[1] - p0) +
+              (p0 - pp[0]) * ttt[:, 1]) / (pp[1] - pp[0])
 
-        f = ((tt[1] - t0) * self.moist[it[0], :] + (t0 - tt[0]) * self.moist[it[1], :]) / (tt[1] - tt[0])
+        f = ((tt[1] - t0) * self.moist[it[0], :] +
+             (t0 - tt[0]) * self.moist[it[1], :]) / (tt[1] - tt[0])
 
         return np.where(self.pressure > p0, dry, f)
