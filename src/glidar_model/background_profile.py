@@ -1,5 +1,3 @@
-
-
 class BackgroundProfile:
 
     def __init__(self, pressure, temperature, dewpoint, altitude) -> None:
@@ -15,6 +13,16 @@ class BackgroundProfileBuilder:
     def __init__(self) -> None:
         raise NotImplementedError('Invocation of abstract class.')
 
-    def get_profile(params) -> BackgroundProfile:
+    def get_profile(self, params) -> BackgroundProfile:
         raise NotImplementedError('This method should be re-implemented.')
 
+
+class StaticBackroundProfileBuilder(BackgroundProfileBuilder):
+
+    def __init__(self, profile: BackgroundProfile) -> None:
+
+        self.profile = profile
+
+    def get_profile(self, params) -> BackgroundProfile:
+
+        return self.profile
