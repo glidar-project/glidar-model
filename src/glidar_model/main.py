@@ -1,4 +1,4 @@
-
+import os
 import argparse
 
 import pandas as pd
@@ -42,7 +42,7 @@ def plot_result(result, ofile=None):
 
     fig, ax = plt.subplots(1, 2, sharey=True)
 
-    plt.suptitle(f'delta t: {result.params.temperature_anomaly}')
+    plt.suptitle(f'{os.path.basename(ofile)[:-4]} delta t: {result.params.temperature_anomaly}')
 
     ax[0].plot(*result.velocity_profile)
 
@@ -75,6 +75,11 @@ def plot_result(result, ofile=None):
                label='dewpoint')
 
     # ax[1].invert_yaxis()
+    ax[0].set_ylim(0, 4000)
+
+    ax[0].set_xlim(0, 10)
+    ax[1].set_xlim(250, 290)
+
 
     if ofile is None:
         plt.show()
